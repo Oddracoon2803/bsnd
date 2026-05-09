@@ -44,7 +44,7 @@
             left: 0;
             width: 100%;
             height: 100%;
-            transform: scaleX(-1); /* Mirror view */
+            transform: scaleX(-1);
             object-fit: cover;
         }
 
@@ -58,6 +58,7 @@
             align-items: center;
             justify-content: center;
             box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            min-width: 300px;
         }
 
         .prediction-label {
@@ -74,6 +75,7 @@
             min-height: 120px;
             display: flex;
             align-items: center;
+            justify-content: center;
         }
 
         .controls {
@@ -93,12 +95,15 @@
         }
 
         #startBtn { background: #27ae60; color: white; }
-        #startBtn:hover { background: #2ecc71; }
-        
         #stopBtn { background: #e67e22; color: white; }
-        #stopBtn:hover { background: #f39c12; }
-
         #exitBtn { background: #c0392b; color: white; }
+
+        .status-bar {
+            font-size: 12px;
+            color: #999;
+            margin-top: 20px;
+            text-align: center;
+        }
 
         @media (max-width: 850px) {
             .app { flex-direction: column; }
@@ -123,14 +128,16 @@
                 <button class="btn" id="stopBtn">Berhenti</button>
                 <button class="btn" id="exitBtn">Keluar</button>
             </div>
-            <p style="font-size: 12px; color: #999; margin-top: 20px;">
-                Status: <span id="status">Ready</span>
-            </p>
+            
+            <div class="status-bar">
+                Status: <span id="status">Ready</span><br>
+                <span id="debug-info" style="font-size: 10px; color: #ccc;"></span>
+            </div>
         </div>
     </div>
 
     <script>
-        // 1. GANTI URL INI DENGAN URL NGROK AKTIF ANDA (WAJIB HTTPS)
+        // 1. URL NGROK (Pastikan diawali https://)
         const API_URL = "https://chatty-joyride-renounce.ngrok-free.dev/predict";
 
         const videoElement = document.querySelector(".input_video");
@@ -138,27 +145,25 @@
         const canvasCtx = canvasElement.getContext("2d");
         const labelBox = document.getElementById("prediction");
         const statusText = document.getElementById("status");
+        const debugText = document.getElementById("debug-info");
 
         let camera = null;
         let running = false;
         let lastPredictTime = 0;
-        const PREDICT_INTERVAL = 400; // ms
+        const PREDICT_INTERVAL = 500; //ms
 
         function extractLandmarks(results) {
             let left = new Array(63).fill(0);
             let right = new Array(63).fill(0);
-
             if (!results.multiHandLandmarks) return [...left, ...right];
 
             results.multiHandLandmarks.forEach((hand, idx) => {
                 const label = results.multiHandedness[idx].label;
                 const coords = [];
                 hand.forEach(lm => coords.push(lm.x, lm.y, lm.z));
-
-                if (label === "Left") left = coords;
+                if (label === "Left" || label === "Left") left = coords;
                 else right = coords;
             });
-
             return [...left, ...right];
         }
 
@@ -168,19 +173,19 @@
                     method: "POST",
                     headers: { 
                         "Content-Type": "application/json",
-                        // Header krusial untuk bypass peringatan Ngrok
                         "ngrok-skip-browser-warning": "true" 
                     },
                     body: JSON.stringify({ landmarks: landmarks })
                 });
 
-                if (!res.ok) throw new Error("Server Error");
+                if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+                
                 const data = await res.json();
+                console.log("Response Success:", data); // Debug di console
                 return data;
             } catch (err) {
-                console.error("API Error:", err);
-                statusText.innerText = "Error Koneksi!";
-                return { label: "Error", conf: 0 };
+                console.error("Fetch Error:", err);
+                return { label: "Error", conf: 0, status: "connection_failed" };
             }
         }
 
@@ -196,7 +201,6 @@
         });
 
         hands.onResults(async (results) => {
-            // Sinkronisasi ukuran canvas dengan resolusi video
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
 
@@ -204,56 +208,59 @@
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-            if (results.multiHandLandmarks) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                 for (const landmarks of results.multiHandLandmarks) {
                     drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 5});
-                    drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2});
+                    drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', radius: 3});
                 }
 
-                // Pengiriman data ke API dengan interval
                 const now = Date.now();
                 if (now - lastPredictTime > PREDICT_INTERVAL) {
                     lastPredictTime = now;
-                    statusText.innerText = "Menganalisa...";
+                    
+                    // Visual feedback sedang proses
+                    if(labelBox.innerText === "-") labelBox.innerText = "...";
                     
                     const landmarkData = extractLandmarks(results);
                     const response = await predictLandmark(landmarkData);
                     
-                    labelBox.innerText = response.label;
-                    statusText.innerText = `Online (Conf: ${(response.conf * 100).toFixed(1)}%)`;
+                    // UPDATE INTERFACE
+                    if (response && response.label) {
+                        labelBox.innerText = response.label;
+                        statusText.innerText = `Online (${(response.conf * 100).toFixed(1)}%)`;
+                        debugText.innerText = `Last update: ${new Date().toLocaleTimeString()}`;
+                    }
                 }
             } else {
                 labelBox.innerText = "-";
-                statusText.innerText = "Tangan tidak terdeteksi";
+                statusText.innerText = "Tangan tidak terlihat";
             }
             canvasCtx.restore();
         });
 
         document.getElementById("startBtn").onclick = () => {
             if (running) return;
-            statusText.innerText = "Memulai kamera...";
+            statusText.innerText = "Membuka Kamera...";
             camera = new Camera(videoElement, {
-                onFrame: async () => {
-                    await hands.send({image: videoElement});
-                },
+                onFrame: async () => { await hands.send({image: videoElement}); },
                 width: 640,
                 height: 480
             });
             camera.start();
             running = true;
-            document.getElementById("startBtn").disabled = true;
+            document.getElementById("startBtn").style.opacity = "0.5";
         };
 
         document.getElementById("stopBtn").onclick = () => {
             if (camera) {
                 camera.stop();
                 running = false;
-                location.reload(); // Refresh paling bersih untuk reset kamera
+                location.reload(); 
             }
         };
 
         document.getElementById("exitBtn").onclick = () => {
-            if(confirm("Keluar dari aplikasi?")) window.close();
+            if(confirm("Tutup aplikasi?")) window.close();
         };
     </script>
 </body>
